@@ -3,6 +3,7 @@ use crate::writer::Writer;
 use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -62,10 +63,16 @@ impl Hold {
     }
 }
 
+struct Stop {
+    flag: AtomicBool,
+    sockets: Mutex<Vec<TcpListener>>,
+}
+
 pub struct Host {
     pub input: Receiver<Input>,
     clients: Shared,
     hold: Arc<Hold>,
+    stop: Arc<Stop>,
     pub cmd_addr: SocketAddr,
     pub data_addr: SocketAddr,
 }
@@ -81,15 +88,19 @@ impl Host {
         let (tx, input) = sync_channel(INPUT_QUEUE);
         let clients = Shared::default();
         let hold = Arc::<Hold>::default();
+        let stop = Arc::new(Stop { flag: AtomicBool::new(false), sockets: Mutex::new(Vec::new()) });
+        remember(&stop, &cl);
+        remember(&stop, &dl);
         let h = Self {
             input,
             clients: clients.clone(),
             hold: hold.clone(),
+            stop: stop.clone(),
             cmd_addr: cl.local_addr()?,
             data_addr: dl.local_addr()?,
         };
-        serve(cl, Port::Cmd, clients.clone(), tx.clone(), hold.clone())?;
-        serve(dl, Port::Data, clients, tx, hold)?;
+        serve(cl, Port::Cmd, clients.clone(), tx.clone(), hold.clone(), stop.clone())?;
+        serve(dl, Port::Data, clients, tx, hold, stop)?;
         Ok(h)
     }
 
@@ -122,8 +133,32 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        self.stop.flag.store(true, Ordering::SeqCst);
+        for l in self.stop.sockets.lock().unwrap().drain(..) {
+            let _ = wake(&l);
+        }
         self.hold.set(false);
+        let gone = {
+            let mut c = self.clients.lock().unwrap();
+            [c.cmd.take(), c.data.take()]
+        };
+        for w in gone.into_iter().flatten() {
+            w.close();
+        }
     }
+}
+
+fn remember(stop: &Stop, l: &TcpListener) {
+    if let Ok(c) = l.try_clone() {
+        stop.sockets.lock().unwrap().push(c);
+    }
+}
+
+fn wake(l: &TcpListener) -> io::Result<()> {
+    if unsafe { libc::shutdown(l.as_raw_fd(), libc::SHUT_RD) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn set_reuse(l: &TcpListener, on: bool) -> io::Result<()> {
@@ -167,16 +202,29 @@ fn bind_fixed(addr: &str, port: u16) -> io::Result<TcpListener> {
     Err(io::Error::new(io::ErrorKind::AddrInUse, "no free port"))
 }
 
-fn serve(l: TcpListener, port: Port, clients: Shared, tx: SyncSender<Input>, hold: Arc<Hold>) -> io::Result<()> {
+fn serve(
+    l: TcpListener,
+    port: Port,
+    clients: Shared,
+    tx: SyncSender<Input>,
+    hold: Arc<Hold>,
+    stop: Arc<Stop>,
+) -> io::Result<()> {
     let name = match port {
         Port::Cmd => "host-cmd-accept",
         Port::Data => "host-data-accept",
     };
     thread::Builder::new().name(name.into()).spawn(move || {
         loop {
+            if stop.flag.load(Ordering::SeqCst) {
+                break;
+            }
             let s = match l.accept() {
                 Ok((s, _)) => s,
                 Err(_) => {
+                    if stop.flag.load(Ordering::SeqCst) {
+                        break;
+                    }
                     thread::sleep(ACCEPT_BACKOFF);
                     continue;
                 }
@@ -190,6 +238,9 @@ fn serve(l: TcpListener, port: Port, clients: Shared, tx: SyncSender<Input>, hol
             if let Err(e) = resume(&l) {
                 eprintln!("xara: {name} cannot listen again, retrying: {e}");
                 while resume(&l).is_err() {
+                    if stop.flag.load(Ordering::SeqCst) {
+                        return;
+                    }
                     thread::sleep(ACCEPT_BACKOFF);
                 }
             }

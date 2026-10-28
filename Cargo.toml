@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/xara-phy", "crates/xara-arq", "crates/xara-host", "crates/xara-ui", "crates/xara", "crates/xara-testkit"]
+members = [
+    "crates/xara-phy",
+    "crates/xara-arq",
+    "crates/xara-host",
+    "crates/xara-ui",
+    "crates/xara",
+    "crates/xara-testkit",
+    "crates/xara-radio",
+    "crates/xara-droid",
+]
 
 [workspace.package]
 version = "0.1.1"
@@ -17,6 +26,7 @@ xara-arq = { path = "crates/xara-arq" }
 xara-host = { path = "crates/xara-host" }
 xara-ui = { path = "crates/xara-ui" }
 xara-testkit = { path = "crates/xara-testkit" }
+xara-radio = { path = "crates/xara-radio" }
 num-complex = "0.4"
 rustfft = "6.4"
 miniz_oxide = "0.8"

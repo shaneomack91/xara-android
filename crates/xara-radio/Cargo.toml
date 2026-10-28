@@ -1,0 +1,12 @@
+[package]
+name = "xara-radio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "CAT control and (tr)uSDX audio-over-CAT framing for the xara modem."
+
+[dependencies]

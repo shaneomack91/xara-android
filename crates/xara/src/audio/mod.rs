@@ -5,23 +5,27 @@ pub mod pulse;
 #[cfg(feature = "pulse")]
 mod pulse_ffi;
 
-#[cfg(not(any(feature = "pulse", feature = "alsa")))]
-compile_error!("xara needs an audio backend: enable the pulse or alsa feature");
+#[cfg(not(any(feature = "pulse", feature = "alsa", feature = "external")))]
+compile_error!("xara needs an audio backend: enable the pulse, alsa, or external feature");
 
 use std::collections::VecDeque;
 use std::io;
+#[cfg(any(feature = "pulse", feature = "alsa"))]
 use std::time::{Duration, Instant};
 
 pub const RATE: u32 = 48000;
 pub const BLOCK: usize = 480;
+#[cfg(any(feature = "pulse", feature = "alsa"))]
 pub(crate) const STALL: Duration = Duration::from_secs(1);
 
 pub type DeviceList = Vec<(String, String)>;
 
+#[cfg(any(feature = "pulse", feature = "alsa"))]
 fn capture_only() -> io::Error {
     io::Error::new(io::ErrorKind::Unsupported, "write to a capture-only audio device")
 }
 
+#[cfg(any(feature = "pulse", feature = "alsa"))]
 fn remaining(until: Instant, what: &str) -> io::Result<Duration> {
     until
         .checked_duration_since(Instant::now())
@@ -112,6 +116,7 @@ fn unbuilt(b: Backend) -> io::Error {
 }
 
 pub fn open(b: Backend, capture: &str, playback: &str, radio: bool) -> io::Result<Box<dyn Audio>> {
+    let _ = (capture, playback, radio);
     match b {
         #[cfg(feature = "pulse")]
         Backend::Pulse => Ok(Box::new(pulse::PulseIo::open(capture, playback, radio)?)),
@@ -123,6 +128,7 @@ pub fn open(b: Backend, capture: &str, playback: &str, radio: bool) -> io::Resul
 }
 
 pub fn check_playback(b: Backend, playback: &str, radio: bool) -> io::Result<()> {
+    let _ = (playback, radio);
     match b {
         #[cfg(feature = "pulse")]
         Backend::Pulse => pulse::check(playback, radio),
@@ -145,6 +151,7 @@ pub fn list(b: Backend) -> io::Result<(DeviceList, DeviceList)> {
 }
 
 pub fn open_capture(b: Backend, capture: &str) -> io::Result<Box<dyn Audio>> {
+    let _ = capture;
     match b {
         #[cfg(feature = "pulse")]
         Backend::Pulse => Ok(Box::new(pulse::PulseIo::open_capture(capture)?)),

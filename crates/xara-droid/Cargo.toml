@@ -1,0 +1,30 @@
+[package]
+name = "xara-droid"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+description = "Android entry points for the xara modem: pushed audio, CAT, and (tr)uSDX."
+
+[lib]
+name = "xara_android"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["jni-bridge"]
+jni-bridge = ["dep:jni"]
+# Higher VARA speeds. Leave this off unless you have a VARA licence.
+registered = []
+
+[dependencies]
+xara-radio.workspace = true
+jni = { version = "0.21", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+xara = { path = "../xara", default-features = false, features = ["external"] }
+xara-host.workspace = true
+xara-arq.workspace = true
+xara-phy.workspace = true

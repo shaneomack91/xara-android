@@ -142,7 +142,9 @@ pub fn is_hidraw(path: &str) -> bool {
     if !m.file_type().is_char_device() {
         return false;
     }
-    let (major, minor) = (libc::major(m.rdev()), libc::minor(m.rdev()));
+    // std reports rdev as u64. Bionic's dev_t is c_ulong, which is 32 bits on armeabi-v7a.
+    let dev = m.rdev() as libc::dev_t;
+    let (major, minor) = (libc::major(dev), libc::minor(dev));
     std::fs::read_link(format!("/sys/dev/char/{major}:{minor}/subsystem"))
         .is_ok_and(|l| l.file_name().is_some_and(|n| n == "hidraw"))
 }

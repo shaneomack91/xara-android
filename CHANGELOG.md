@@ -1,5 +1,15 @@
 # Changelog
 
+## unreleased
+
+android app around the existing modem
+
+- phone UI for callsign, VARA-compatible mode, audio devices, and a TCP TNC
+- USB serial PTT (RTS, DTR), CAT, and (tr)uSDX audio-over-CAT
+- radios: Kenwood TS-480, Xiegu G90 (CI-V), Icom CI-V, Yaesu FT-891/991, (tr)uSDX
+- default is VOX with no radio, so the app runs on the mic and speaker
+- higher VARA speeds stay off unless the build enables the `registered` feature
+
 ## 0.1.1
 
 recording feature and bugfixes

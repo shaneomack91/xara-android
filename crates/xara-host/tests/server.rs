@@ -34,6 +34,25 @@ fn a_kiss_client_that_stops_reading_is_dropped() {
     }
 }
 
+#[test]
+fn dropping_the_listeners_frees_the_ports() {
+    let h = Host::bind("127.0.0.1", 0).unwrap();
+    let k = KissServer::bind("127.0.0.1", 0).unwrap();
+    let (cmd, kiss) = (h.cmd_addr, k.addr);
+    drop(h);
+    drop(k);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut cmd_ok = false;
+    let mut kiss_ok = false;
+    while Instant::now() < deadline && !(cmd_ok && kiss_ok) {
+        cmd_ok = cmd_ok || std::net::TcpListener::bind(cmd).is_ok();
+        kiss_ok = kiss_ok || std::net::TcpListener::bind(kiss).is_ok();
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(cmd_ok, "command port {cmd} still busy");
+    assert!(kiss_ok, "KISS port {kiss} still busy");
+}
+
 fn command_host() -> (Host, TcpStream) {
     let h = Host::bind("127.0.0.1", 0).unwrap();
     let c = TcpStream::connect(h.cmd_addr).unwrap();

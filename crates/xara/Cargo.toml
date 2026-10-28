@@ -24,6 +24,8 @@ xara-testkit.workspace = true
 default = ["pulse", "alsa"]
 pulse = []
 alsa = ["dep:alsa-sys"]
+# Samples are pushed in by the caller. Used by the Android app; desktop builds keep pulse/alsa.
+external = []
 registered = []
 fixed-turbo = ["xara-phy/fixed-turbo"]
 float-turbo = ["xara-phy/float-turbo"]

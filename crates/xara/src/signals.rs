@@ -10,11 +10,22 @@ static PIPE: AtomicI32 = AtomicI32::new(-1);
 extern "C" fn deliver(_: libc::c_int) {
     // SAFETY: errno is thread-local and restored before returning; write is async-signal-safe.
     unsafe {
-        let errno = libc::__errno_location();
+        let errno = errno_location();
         let saved = *errno;
         libc::write(PIPE.load(Ordering::Relaxed), [0u8].as_ptr().cast(), 1);
         *errno = saved;
     }
+}
+
+/// Bionic exposes the thread-local errno slot as `__errno`. glibc and musl use `__errno_location`.
+#[cfg(target_os = "android")]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno() }
+}
+
+#[cfg(not(target_os = "android"))]
+unsafe fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
 }
 
 struct Signals(File);

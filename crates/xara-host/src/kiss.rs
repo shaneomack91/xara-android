@@ -1,6 +1,8 @@
 use crate::writer::Writer;
 use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,6 +85,22 @@ pub struct KissServer {
     pub input: Receiver<(u8, Vec<u8>)>,
     clients: Clients,
     pub addr: SocketAddr,
+    stop: Arc<AtomicBool>,
+    wake: Mutex<Option<TcpListener>>,
+}
+
+impl Drop for KissServer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(l) = self.wake.lock().unwrap().take() {
+            unsafe { libc::shutdown(l.as_raw_fd(), libc::SHUT_RD) };
+        }
+        for slot in self.clients.lock().unwrap().iter_mut() {
+            if let Some((_, w)) = slot.take() {
+                w.close();
+            }
+        }
+    }
 }
 
 impl KissServer {
@@ -90,12 +108,21 @@ impl KissServer {
         let l = TcpListener::bind((addr, port))?;
         let (tx, input) = sync_channel(INPUT_QUEUE);
         let clients: Clients = Arc::new(Mutex::new((0..MAX_CLIENTS).map(|_| None).collect()));
-        let s = Self { input, clients: clients.clone(), addr: l.local_addr()? };
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = l.try_clone().ok();
+        let s =
+            Self { input, clients: clients.clone(), addr: l.local_addr()?, stop: stop.clone(), wake: Mutex::new(wake) };
         thread::Builder::new().name("kiss-accept".into()).spawn(move || {
             for id in 0u64..=u64::MAX {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 let s = match l.accept() {
                     Ok((s, _)) => s,
                     Err(_) => {
+                        if stop.load(Ordering::SeqCst) {
+                            break;
+                        }
                         thread::sleep(crate::server::ACCEPT_BACKOFF);
                         continue;
                     }

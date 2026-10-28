@@ -1,6 +1,6 @@
 # xara
 
-a VARA-compatible modem for linux. tested against VARA HF 4.9.0 and FM 4.4.0.
+a VARA-compatible modem. the linux program is tested against VARA HF 4.9.0 and FM 4.4.0. this tree also builds an Android app around the same modem.
 
 ## minimum config
 
@@ -34,6 +34,58 @@ alternatively for a local setup you can do:
 
     cargo build --release
     cargo test
+
+## android
+
+the phone app is in `android/`. the main screen is the session: callsign,
+VARA-compatible mode, and Start, Stop, and Key. Audio, Radio, and TNC settings
+are in the menu.
+
+build it with the Android SDK, NDK r27 or newer, and JDK 17 or 21. Gradle 8.9
+does not run on JDK 25. `ANDROID_HOME` must point at the SDK. `cargo-ndk` finds
+the NDK there. the native library is built into `android/app/src/main/jniLibs`
+and is not part of the git tree.
+
+    rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+    cargo install cargo-ndk
+    RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o android/app/src/main/jniLibs build --release -p xara-droid
+
+then, from `android/`, `./gradlew assembleDebug` (or open that directory in
+Android Studio). the debug APK is
+`android/app/build/outputs/apk/debug/app-debug.apk`.
+
+higher VARA speeds stay off unless you have a licence and build with the
+`registered` feature. put this in `android/local.properties`, which is not
+committed:
+
+    xara.registered=true
+
+and add `--features registered` to the `cargo ndk` command above, or run
+`./gradlew cargoNdk` before the APK. without that, the modem uses the
+unregistered speed limits.
+
+ - **Audio.** microphone and speaker. system default is the phone mic and speaker.
+ - **Radio.** radio type, PTT, USB serial, baud, and CAT frequency. the default
+   radio is (None) and the default PTT is VOX, so a fresh install uses the mic
+   and speaker and does not send CAT or assume a PTT line. USB serial is an OTG
+   CAT or PTT cable (FTDI, CH340, CP210x, Prolific, CDC).
+ - **TNC.** listen address, command port, KISS port, and PTT timing.
+
+PTT choices are VOX, RTS, DTR, CAT, and (tr)uSDX audio-over-CAT. RTS and DTR
+key a serial control line. CAT sends a key command. (tr)uSDX audio sends sound
+on the CAT port instead of the phone speaker.
+
+radios: (None), Kenwood TS-480 (`FA`/`FB`/`MD`/`IF`, `TX`/`RX`), Xiegu G90
+(CI-V, 19200, address `70`), Icom CI-V, Yaesu FT-891/991, and (tr)uSDX
+(Kenwood commands plus `UA`/`US` audio, 115200).
+
+a client connects over TCP. the command port defaults to 8300. the data port is
+always the next one (8301). on the phone use host `127.0.0.1`; from another
+device use the phone's address. HF modes are the VARA-compatible HF session.
+FM narrow and FM wide are the VARA-compatible FM session. the KISS port
+defaults to 8001 (0 turns it off). that path carries AX.25 inside the
+VARA-compatible modem, not 1200-baud packet. Winlink for Android (WoAD) is one
+client that can use these ports.
 
 ## options
 
@@ -133,7 +185,9 @@ options:
 ## registered mode
 
 compile with the `registered` feature for higher speeds if you have a
-registered copy of VARA, then run with `xara --registered ...`.
+registered copy of VARA, then run with `xara --registered ...`. the Android
+build uses the same feature; see the android section. it is off unless you
+turn it on before compiling.
 
 ## copyright
 
