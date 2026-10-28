@@ -9,6 +9,7 @@ android app around the existing modem
 - radios: Kenwood TS-480, Xiegu G90 (CI-V), Icom CI-V, Yaesu FT-891/991, (tr)uSDX
 - default is VOX with no radio, so the app runs on the mic and speaker
 - higher VARA speeds stay off unless the build enables the `registered` feature
+- `cargo build` stays the Linux program; the Android JNI crate is built with `-p xara-droid`
 
 ## 0.1.1
 

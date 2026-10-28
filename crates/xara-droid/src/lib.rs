@@ -5,6 +5,14 @@ pub fn registered() -> bool {
     cfg!(feature = "registered")
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn registered_speeds_follow_the_compile_flag() {
+        assert_eq!(crate::registered(), cfg!(feature = "registered"));
+    }
+}
+
 #[cfg(feature = "jni-bridge")]
 mod jni_export;
 

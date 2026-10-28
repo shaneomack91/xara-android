@@ -10,6 +10,17 @@ members = [
     "crates/xara-radio",
     "crates/xara-droid",
 ]
+# The Android JNI crate is a member so `cargo test -p xara-droid` works.
+# It is not a default member: `cargo build` and `cargo test` stay the Linux program.
+default-members = [
+    "crates/xara-phy",
+    "crates/xara-arq",
+    "crates/xara-host",
+    "crates/xara-ui",
+    "crates/xara",
+    "crates/xara-testkit",
+    "crates/xara-radio",
+]
 
 [workspace.package]
 version = "0.1.1"

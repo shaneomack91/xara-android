@@ -35,16 +35,23 @@ alternatively for a local setup you can do:
     cargo build --release
     cargo test
 
+that builds the Linux program and the shared radio library. it does not build
+the Android JNI crate.
+
 ## android
 
 the phone app is in `android/`. the main screen is the session: callsign,
 VARA-compatible mode, and Start, Stop, and Key. Audio, Radio, and TNC settings
 are in the menu.
 
-build it with the Android SDK, NDK r27 or newer, and JDK 17 or 21. Gradle 8.9
-does not run on JDK 25. `ANDROID_HOME` must point at the SDK. `cargo-ndk` finds
-the NDK there. the native library is built into `android/app/src/main/jniLibs`
-and is not part of the git tree.
+`cargo build` does not compile it. the native library is the `xara-droid` crate
+and links the `jni` crate, so you build that package on its own. a fresh clone
+has no `.so` files; they are generated into `android/app/src/main/jniLibs` and
+are not committed.
+
+you need the Android SDK, NDK r27 or newer, and JDK 17 or 21. Gradle 8.9 does
+not run on JDK 25. `ANDROID_HOME` must point at the SDK. `cargo-ndk` finds the
+NDK there.
 
     rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
     cargo install cargo-ndk
@@ -53,6 +60,10 @@ and is not part of the git tree.
 then, from `android/`, `./gradlew assembleDebug` (or open that directory in
 Android Studio). the debug APK is
 `android/app/build/outputs/apk/debug/app-debug.apk`.
+
+on a desktop or a Pi, `cargo test -p xara-droid` builds that crate for the
+machine you are on and runs its tests. that does not make an APK and does not
+need the NDK. the phone library still comes from the `cargo ndk` command above.
 
 higher VARA speeds stay off unless you have a licence and build with the
 `registered` feature. put this in `android/local.properties`, which is not
