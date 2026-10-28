@@ -5,7 +5,9 @@
 - (tr)uSDX audio over CAT: `--audio trusdx` and `--ptt trusdx` carry the
   radio's audio and PTT on its USB serial port, on the command line and in
   the Android app (*Connection: (tr)uSDX*), with no sound card. ported from
-  Shane Curless VA3SHC's xara-android (x0rro/xara#12)
+  Shane Curless VA3SHC's xara-android (x0rro/xara#12). `--trusdx-speaker`
+  turns the radio's speaker on. the Android app can also play the modem's
+  receive and transmit audio on the phone
 
 - macOS support: CoreAudio backend, `--list-devices`, CM108 PTT by USB id,
   launchd agent

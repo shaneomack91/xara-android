@@ -53,7 +53,10 @@ chip through Android's USB host API (`usb-serial-for-android`), at 115200
 8N1, and passes the bytes to the modem (`--audio trusdx --capture app`).
 Android asks once for access to the USB device; plugging the radio in also
 offers to open xara. it needs the DL2MAN / PE1NNZ firmware with CAT
-streaming. unplugging the radio stops the modem. after VA3SHC's
+streaming. *(tr)uSDX speaker* plays that stream from the radio (`UA1;`).
+*Hear audio on this phone* plays what the modem receives and transmits
+through the phone's speaker, for a (tr)uSDX or a USB sound card. unplugging
+the radio stops the modem. after VA3SHC's
 xara-android (x0rro/xara#12). a foreground
 service with a notification keeps the modem running in the background.
 

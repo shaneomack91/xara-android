@@ -192,6 +192,8 @@ fun ModemScreen() {
     var recordAudio by remember { mutableStateOf(prefs.recordAudio) }
     var registered by remember { mutableStateOf(prefs.registered) }
     var hookup by remember { mutableStateOf(Hookup.valueOf(prefs.hookup)) }
+    var radioSpeaker by remember { mutableStateOf(prefs.radioSpeaker) }
+    var phoneListen by remember { mutableStateOf(prefs.phoneListen) }
     val serialPorts = rememberSerialPorts(context)
     var problem by remember { mutableStateOf<String?>(null) }
     val inputs = rememberDevices(context, true)
@@ -213,7 +215,7 @@ fun ModemScreen() {
         prefs.capture = capture; prefs.playback = playback
         prefs.monitor = monitor; prefs.monitorFrames = monitorFrames; prefs.monitorCalls = monitorCalls
         prefs.debugLog = debugLog; prefs.recordAudio = recordAudio; prefs.registered = registered
-        prefs.hookup = hookup.name
+        prefs.hookup = hookup.name; prefs.radioSpeaker = radioSpeaker; prefs.phoneListen = phoneListen
         val builtIn = listOfNotNull(inputs.find { it.id == capture }, outputs.find { it.id == playback }).filter { it.builtIn }
         problem = when {
             hookup == Hookup.TRUSDX -> if (serialPorts.isEmpty()) "No USB serial adapter found. Plug in the (tr)uSDX." else null
@@ -294,10 +296,11 @@ fun ModemScreen() {
         Choice("Connection", Hookup.entries, hookup, { it.label }, editable) { hookup = it }
         if (hookup == Hookup.TRUSDX) {
             Text("Serial port  ${serialPorts.firstOrNull() ?: "none plugged in"}")
+            Toggle("(tr)uSDX speaker", radioSpeaker, editable) { radioSpeaker = it }
             Note(
                 "The (tr)uSDX sends and receives its audio as data on its USB serial (CAT) port, so no sound card " +
                     "or microphone is used, and xara keys it over CAT. It needs the DL2MAN / PE1NNZ firmware with " +
-                    "CAT streaming. Its speaker stays off while xara streams.",
+                    "CAT streaming. The radio's speaker stays off unless that switch is on.",
             )
         } else {
             Choice("Audio in", inputs, inputs.find { it.id == capture }, { it?.label ?: "none" }, editable) { capture = it?.id ?: 0 }
@@ -316,6 +319,8 @@ fun ModemScreen() {
                     "or rigctld.",
             )
         }
+        Toggle("Hear audio on this phone", phoneListen, editable) { phoneListen = it }
+        Note("Plays what the modem receives and what it transmits through this phone's speaker.")
 
         Section("Receive")
         Toggle("Show other stations' traffic", monitor, editable && mode.isHF) { monitor = it }

@@ -49,6 +49,7 @@ object Modem {
         if (handle != 0L) return
         val i = Intent(context, ModemService::class.java).putExtra(ModemService.ARGS, config.arguments())
             .putExtra(ModemService.TRUSDX, config.hookup == Hookup.TRUSDX)
+            .putExtra(ModemService.HEAR, config.phoneListen)
         config.stateDir.mkdirs()
         ContextCompat.startForegroundService(context, i)
         status.value = "Starting…"
@@ -112,6 +113,7 @@ class ModemService : Service() {
     }
 
     override fun onDestroy() {
+        PhoneListen.stop()
         TrusdxPort.close()
         instance = null
         super.onDestroy()
@@ -130,6 +132,8 @@ class ModemService : Service() {
         } else if (args == null || !Modem.startNative(args)) {
             TrusdxPort.close()
             stopSelf()
+        } else if (intent?.getBooleanExtra(HEAR, false) == true) {
+            PhoneListen.start()
         }
         return START_NOT_STICKY
     }
@@ -152,6 +156,7 @@ class ModemService : Service() {
     companion object {
         const val ARGS = "args"
         const val TRUSDX = "trusdx"
+        const val HEAR = "hear"
         private const val CHANNEL = "modem"
         var instance: ModemService? = null
     }

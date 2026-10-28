@@ -142,3 +142,18 @@ pub extern "C" fn Java_io_github_x0rro_xara_Native_serialFailed(env: Env, _: JOb
     };
     xara::audio::trusdx::app_failed(&why);
 }
+
+/// Little-endian PCM16 of the modem's receive and transmit audio mixed together.
+/// Returns how many bytes were written into `buf`.
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_io_github_x0rro_xara_Native_listenOut(env: Env, _: JObject, buf: JObject) -> i32 {
+    // SAFETY: the JVM passes a live env and a byte[].
+    unsafe {
+        let len = slot::<unsafe extern "C" fn(Env, JObject) -> i32>(env, GET_ARRAY_LENGTH)(env, buf);
+        let mut out = vec![0u8; len.max(0) as usize];
+        let n = xara::audio::listen::take_le(&mut out);
+        let set = slot::<unsafe extern "C" fn(Env, JObject, i32, i32, *const u8)>(env, SET_BYTE_ARRAY_REGION);
+        set(env, buf, 0, n as i32, out.as_ptr());
+        n as i32
+    }
+}

@@ -53,6 +53,10 @@ data class ModemConfig(
     /** Registered VARA speeds, for a user with a VARA licence. */
     val registered: Boolean = false,
     val hookup: Hookup = Hookup.SOUND_CARD,
+    /** (tr)uSDX speaker plays the CAT audio stream. */
+    val radioSpeaker: Boolean = false,
+    /** This phone's speaker plays what the modem receives and transmits. */
+    val phoneListen: Boolean = false,
 ) {
     val callValid: Boolean
         get() = call.uppercase().matches(Regex("^[A-Z0-9]{3,7}(-[0-9]{1,2})?$")) && !call.uppercase().startsWith("N0CALL")
@@ -64,6 +68,7 @@ data class ModemConfig(
         if (hookup == Hookup.TRUSDX) {
             // The radio's serial port, which TrusdxPort carries; PTT is TX0; and RX; in the same stream.
             a += listOf("--audio", "trusdx", "--capture", "app", "--playback", "app", "--radio", "--ptt", "trusdx")
+            if (radioSpeaker) a += "--trusdx-speaker"
         } else {
             a += listOf("--audio", "aaudio", "--capture", "$capture", "--playback", "$playback", "--radio")
             a += listOf("--ptt", if (ptt == Ptt.VOX) "vox" else "rigctld:$rigctld")
@@ -110,6 +115,8 @@ class Prefs(context: Context) {
     var recordAudio by bool("recordAudio", false)
     var registered by bool("registered", false)
     var hookup by string("hookup", Hookup.SOUND_CARD.name)
+    var radioSpeaker by bool("radioSpeaker", false)
+    var phoneListen by bool("phoneListen", false)
 
     /** A token kept across launches, so a bookmarked controlling web UI keeps working. */
     val uiToken: String
@@ -132,6 +139,8 @@ class Prefs(context: Context) {
         },
         registered = registered,
         hookup = Hookup.valueOf(hookup),
+        radioSpeaker = radioSpeaker,
+        phoneListen = phoneListen,
     )
 
     private fun string(k: String, d: String) = object : kotlin.properties.ReadWriteProperty<Any?, String> {

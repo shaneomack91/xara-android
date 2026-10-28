@@ -30,9 +30,15 @@ const RESTART: Duration = Duration::from_secs(2);
 
 /// Set by the `trusdx` PTT, read by the audio: the radio is keyed in its audio stream.
 static KEYED: AtomicBool = AtomicBool::new(false);
+/// `UA1;` instead of `UA2;`: the radio's own speaker plays the stream.
+static SPEAKER: AtomicBool = AtomicBool::new(false);
 
 pub fn set_keyed(on: bool) {
     KEYED.store(on, Ordering::SeqCst);
+}
+
+pub fn set_speaker(on: bool) {
+    SPEAKER.store(on, Ordering::SeqCst);
 }
 
 #[derive(Default)]
@@ -200,6 +206,7 @@ pub struct TrusdxIo {
     /// the radio keyed, or key it again, until a silent block.
     saw_ptt: bool,
     hold_off: bool,
+    speaker: bool,
 }
 
 impl TrusdxIo {
@@ -241,8 +248,9 @@ impl TrusdxIo {
             asked: Instant::now(),
             saw_ptt: false,
             hold_off: false,
+            speaker: SPEAKER.load(Ordering::SeqCst),
         };
-        io.port.write(trusdx::START)?;
+        io.port.write(trusdx::start(io.speaker))?;
         Ok(io)
     }
 
@@ -283,8 +291,8 @@ impl Audio for TrusdxIo {
         drop(rx);
         if quiet && !keyed && self.asked.elapsed() > RESTART {
             self.asked = Instant::now();
-            // `UA2;` does not unkey. A missed `;RX;` would otherwise leave the radio transmitting.
-            self.port.write(trusdx::RESUME)?;
+            // `UA1;`/`UA2;` do not unkey. A missed `;RX;` would otherwise leave the radio transmitting.
+            self.port.write(trusdx::resume(self.speaker))?;
         }
         Ok(())
     }
@@ -334,6 +342,15 @@ impl Drop for TrusdxIo {
 mod tests {
     use super::*;
 
+    fn exclusive<T>(f: impl FnOnce() -> T) -> T {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        set_speaker(false);
+        let v = f();
+        set_speaker(false);
+        v
+    }
+
     #[test]
     fn the_port_is_one_device_for_capture_and_playback() {
         assert!(port_name("/dev/ttyUSB0", "/dev/ttyUSB0").is_ok());
@@ -347,6 +364,10 @@ mod tests {
     /// keys and unkeys it in the stream, and leaves it unkeyed and quiet when closed.
     #[test]
     fn app_port_round_trip() {
+        exclusive(|| app_port_round_trip_locked());
+    }
+
+    fn app_port_round_trip_locked() {
         let mut io = TrusdxIo::open(APP, APP, true).unwrap();
         assert!(TrusdxIo::open(APP, APP, true).is_err());
         assert_eq!(app_take(64, Duration::ZERO), trusdx::START);
@@ -397,5 +418,16 @@ mod tests {
         drop(io);
         assert_eq!(app_take(64, Duration::ZERO), trusdx::STOP);
         assert!(TrusdxIo::open(APP, APP, true).is_ok(), "free again once closed");
+    }
+
+    #[test]
+    fn the_radio_speaker_uses_ua1() {
+        exclusive(|| {
+            set_speaker(true);
+            let io = TrusdxIo::open(APP, APP, false).unwrap();
+            assert_eq!(app_take(64, Duration::ZERO), trusdx::START_SPEAKER);
+            drop(io);
+            let _ = app_take(64, Duration::ZERO);
+        });
     }
 }

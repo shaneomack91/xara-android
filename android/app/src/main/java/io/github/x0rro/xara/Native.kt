@@ -31,4 +31,10 @@ object Native {
 
     /** The serial port is gone; the modem stops, saying [why]. */
     external fun serialFailed(why: String)
+
+    /**
+     * Little-endian PCM16 at 48 kHz, receive and transmit mixed.
+     * Returns how many bytes were written into [buf].
+     */
+    external fun listenOut(buf: ByteArray): Int
 }

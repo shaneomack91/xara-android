@@ -66,6 +66,8 @@ struct Args {
     monitor: bool,
     monitor_frames: bool,
     heard: Vec<String>,
+    /// (tr)uSDX plays the CAT audio stream on its own speaker (`UA1;` instead of `UA2;`).
+    trusdx_speaker: bool,
 }
 
 fn finite(k: &str, v: &str) -> Result<f64, String> {
@@ -104,6 +106,7 @@ fn defaults() -> Args {
         monitor: false,
         monitor_frames: false,
         heard: Vec::new(),
+        trusdx_speaker: false,
     }
 }
 
@@ -164,6 +167,7 @@ fn take(a: &mut Args, k: &str, mut v: impl FnMut() -> Result<String, String>) ->
         "--monitor" => a.monitor = true,
         "--monitor-frames" => a.monitor_frames = true,
         "--monitor-call" => a.heard.push(cli::call(&v()?)?),
+        "--trusdx-speaker" => a.trusdx_speaker = true,
         #[cfg(feature = "registered")]
         "--registered" => a.registered = true,
         #[cfg(not(feature = "registered"))]
@@ -278,6 +282,9 @@ fn check(a: &Args) -> Result<(), String> {
         (false, true) => return Err("--ptt trusdx needs --audio trusdx".into()),
         (true, false) if a.radio => return Err("--audio trusdx keys the radio over CAT: use --ptt trusdx".into()),
         _ => {}
+    }
+    if a.trusdx_speaker && a.audio != Backend::Trusdx {
+        return Err("--trusdx-speaker needs --audio trusdx".into());
     }
     if a.timing.lead > Duration::from_secs(1) || a.timing.tail > Duration::from_secs(1) {
         return Err("--ptt-lead-ms and --ptt-tail-ms must be <= 1000".into());
@@ -630,6 +637,7 @@ fn pump(
     let mut tx = audio::TxAudio::new(lead_samples(a));
     let (mut x, mut out) = (vec![0.0; audio::BLOCK], vec![0.0; audio::BLOCK]);
     let (mut rx, mut sent) = (vec![0i16; audio::BLOCK], vec![0i16; audio::BLOCK]);
+    audio::listen::clear();
     let audio = (|| {
         while !stop.load(Ordering::SeqCst) {
             io.read(&mut rx)?;
@@ -645,6 +653,7 @@ fn pump(
             tx.process(&mut out, forced);
             sent.iter_mut().zip(&out).for_each(|(s, &v)| *s = audio::quantize(v));
             io.write(&sent)?;
+            audio::listen::push(&rx, &sent);
             if let Some(r) = rec.as_deref_mut() {
                 r.push(&rx, &sent, record::ptt(keyed, forced, tuning));
             }
@@ -676,6 +685,7 @@ fn open_audio(
     error: &mut Option<String>,
 ) -> Result<(Args, Box<dyn Audio>), std::io::Error> {
     let devices = |k: &str| k == "capture" || k == "playback";
+    audio::trusdx::set_speaker(a.trusdx_speaker);
     match audio::open(a.audio, &a.capture, &a.playback, a.radio) {
         Ok(io) => Ok((a, io)),
         Err(e) if applied.is_some_and(|s| s.iter().any(|(k, _)| devices(k))) => {
@@ -683,6 +693,7 @@ fn open_audio(
             *error = Some(format!("saved audio devices failed: {e}"));
             let rest: Pairs = applied.into_iter().flatten().filter(|(k, _)| !devices(k)).cloned().collect();
             let base = with_saved(argv, &rest, a.fm.is_some()).map_err(std::io::Error::other)?;
+            audio::trusdx::set_speaker(base.trusdx_speaker);
             let io = audio::open(base.audio, &base.capture, &base.playback, base.radio)?;
             Ok((base, io))
         }

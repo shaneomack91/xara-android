@@ -18,9 +18,20 @@ pub const TX_RATE: u32 = 11520;
 pub const BAUD: u32 = 115_200;
 /// Streaming with the radio's speaker off: the modem is listening, nobody else needs to.
 pub const START: &[u8] = b"UA2;";
+/// Same stream with the radio's speaker on (`UA1;`).
+pub const START_SPEAKER: &[u8] = b"UA1;";
 pub const STOP: &[u8] = b";RX;UA0;";
 /// Unkey, then stream again. `UA2;` alone leaves a keyed radio transmitting.
 pub const RESUME: &[u8] = b";RX;UA2;";
+pub const RESUME_SPEAKER: &[u8] = b";RX;UA1;";
+
+pub fn start(speaker: bool) -> &'static [u8] {
+    if speaker { START_SPEAKER } else { START }
+}
+
+pub fn resume(speaker: bool) -> &'static [u8] {
+    if speaker { RESUME_SPEAKER } else { RESUME }
+}
 const SILENCE: u8 = 0x80;
 const CAT_MAX: usize = 64;
 

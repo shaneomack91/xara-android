@@ -179,6 +179,7 @@ summary of settings:
     --ptt cm108:VID:PID[:GPIO]  same, by hex USB id (macOS)
     --ptt rigctld[:HOST:PORT]   hamlib rigctld CAT on HOST:PORT
     --ptt trusdx                (tr)uSDX CAT, with --audio trusdx
+    --trusdx-speaker            (tr)uSDX speaker on while streaming (default off)
 
     --ptt-lead-ms N             PTT held for N ms before xmit (default: 0)
     --ptt-tail-ms N             PTT held for N ms after xmit (default: 100)
@@ -198,7 +199,9 @@ same stream:
 
 the port runs at 115200 8N1 with DTR on and RTS off; on macOS it is the
 `/dev/cu.wchusbserial*` device. the radio's speaker is off while xara
-streams. the Android app does the same over Android's USB host API. ported
+streams unless `--trusdx-speaker` is set (`UA1;` instead of `UA2;`). the
+Android app does the same over Android's USB host API, and can also play the
+modem's receive and transmit audio on the phone. ported
 from Shane Curless VA3SHC's Android work in
 [x0rro/xara#12](https://github.com/x0rro/xara/pull/12).
 

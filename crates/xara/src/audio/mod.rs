@@ -8,6 +8,7 @@ pub mod alsa;
 pub mod coreaudio;
 #[cfg(coreaudio)]
 mod coreaudio_ffi;
+pub mod listen;
 #[cfg(pulse)]
 pub mod pulse;
 #[cfg(pulse)]
