@@ -19,6 +19,8 @@ pub const BAUD: u32 = 115_200;
 /// Streaming with the radio's speaker off: the modem is listening, nobody else needs to.
 pub const START: &[u8] = b"UA2;";
 pub const STOP: &[u8] = b";RX;UA0;";
+/// Unkey, then stream again. `UA2;` alone leaves a keyed radio transmitting.
+pub const RESUME: &[u8] = b";RX;UA2;";
 const SILENCE: u8 = 0x80;
 const CAT_MAX: usize = 64;
 

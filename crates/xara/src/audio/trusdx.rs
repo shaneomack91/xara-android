@@ -196,6 +196,10 @@ pub struct TrusdxIo {
     reader: Option<JoinHandle<()>>,
     due: Option<Instant>,
     asked: Instant,
+    /// PTT has been on during this transmission. Once it drops, leftover samples must not hold
+    /// the radio keyed, or key it again, until a silent block.
+    saw_ptt: bool,
+    hold_off: bool,
 }
 
 impl TrusdxIo {
@@ -227,7 +231,17 @@ impl TrusdxIo {
             (Port::Tty(f), Some(reader))
         };
         set_keyed(false);
-        let mut io = Self { shared, port, tx: Codec::new(), radio, reader, due: None, asked: Instant::now() };
+        let mut io = Self {
+            shared,
+            port,
+            tx: Codec::new(),
+            radio,
+            reader,
+            due: None,
+            asked: Instant::now(),
+            saw_ptt: false,
+            hold_off: false,
+        };
         io.port.write(trusdx::START)?;
         Ok(io)
     }
@@ -269,20 +283,34 @@ impl Audio for TrusdxIo {
         drop(rx);
         if quiet && !keyed && self.asked.elapsed() > RESTART {
             self.asked = Instant::now();
-            self.port.write(trusdx::START)?;
+            // `UA2;` does not unkey. A missed `;RX;` would otherwise leave the radio transmitting.
+            self.port.write(trusdx::RESUME)?;
         }
         Ok(())
     }
 
-    /// Keys the radio when PTT is on, or as soon as there is audio to send: the PTT thread sets
-    /// [`KEYED`] a little after the modem starts a frame, and the radio keys in this same stream,
-    /// so waiting for it would cut the frame's start. The modem mutes its output when PTT is
-    /// forced off, so the watchdog still unkeys.
+    /// Keys as soon as there is audio, because the PTT thread sets [`KEYED`] a little after the
+    /// modem starts a frame and waiting for it would cut the frame's start. After that PTT has
+    /// been on, only PTT keeps the radio keyed: a non-silent tail must not hold transmit open,
+    /// or the radio never gets `;RX;`. The modem mutes its output when PTT is forced off, so the
+    /// watchdog still unkeys.
     fn write(&mut self, x: &[i16]) -> io::Result<()> {
         if !self.radio {
             return Ok(());
         }
-        let keyed = KEYED.load(Ordering::SeqCst) || x.iter().any(|&s| s != 0);
+        let ptt = KEYED.load(Ordering::SeqCst);
+        let audio = x.iter().any(|&s| s != 0);
+        if ptt {
+            self.saw_ptt = true;
+            self.hold_off = false;
+        } else if self.saw_ptt {
+            self.saw_ptt = false;
+            self.hold_off = true;
+        }
+        let keyed = ptt || (audio && !self.hold_off);
+        if self.hold_off && !audio {
+            self.hold_off = false;
+        }
         let bytes = self.tx.send(x, keyed);
         if bytes.is_empty() { Ok(()) } else { self.port.write(&bytes) }
     }
@@ -340,6 +368,15 @@ mod tests {
         set_keyed(false);
         io.write(&quiet).unwrap();
         assert_eq!(app_take(4096, Duration::ZERO), b";RX;");
+        // Samples still playing after PTT drops must unkey, and must not key the radio again.
+        set_keyed(true);
+        io.write(&x).unwrap();
+        set_keyed(false);
+        io.write(&x).unwrap();
+        assert_eq!(app_take(4096, Duration::ZERO).windows(4).any(|w| w == b";RX;"), true);
+        io.write(&x).unwrap();
+        assert!(app_take(4096, Duration::ZERO).is_empty(), "residual audio must not rekey");
+        io.write(&quiet).unwrap();
         // Audio before PTT is on keys the radio at once, so no frame loses its start.
         io.write(&x).unwrap();
         assert!(app_take(4096, Duration::ZERO).starts_with(b"TX0;US"));
