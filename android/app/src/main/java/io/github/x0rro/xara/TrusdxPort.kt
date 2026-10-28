@@ -82,7 +82,8 @@ object TrusdxPort {
             }
         }).also { Executors.newSingleThreadExecutor().submit(it) }
         writer = Thread({
-            val buf = ByteArray(4096)
+            // Small writes, so an unkey is not stuck behind a buffer the radio's UART will drop.
+            val buf = ByteArray(256)
             while (open) {
                 val n = Native.serialOut(buf, 100)
                 if (n <= 0) continue

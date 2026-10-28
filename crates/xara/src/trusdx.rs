@@ -4,8 +4,10 @@
 //! DL2MAN documents the extension, and the PE1NNZ / DL2MAN firmware implements it: `UA0;`
 //! stops streaming, `UA1;` streams with the speaker on, `UA2;` with it off. Received audio
 //! follows `US` as unsigned 8-bit samples at 7825 Hz until `;`, with CAT replies between a
-//! `;` and the next `US`. `TX0;` keys, then `US` and 8-bit samples at 11520 Hz, and `;RX;`
-//! unkeys. A sample is never `;`: the radio sends 0x3C for it, and hosts send 0x3A.
+//! `;` and the next `US`. Transmit audio is not a `US` frame: `;TX0;` keys, the following
+//! bytes are raw 8-bit samples at 11520 Hz, and `;RX;` unkeys. A sample is never `;`: the
+//! radio sends 0x3C for it, and hosts send 0x3A. `UA` is what starts the receive stream, so it
+//! is sent again after the radio is back in receive.
 
 use std::collections::VecDeque;
 
@@ -21,7 +23,7 @@ pub const START: &[u8] = b"UA2;";
 /// Same stream with the radio's speaker on (`UA1;`).
 pub const START_SPEAKER: &[u8] = b"UA1;";
 pub const STOP: &[u8] = b";RX;UA0;";
-/// Unkey, then stream again. `UA2;` alone leaves a keyed radio transmitting.
+/// Unkey, then start the receive stream again. `;RX;` alone leaves that stream off.
 pub const RESUME: &[u8] = b";RX;UA2;";
 pub const RESUME_SPEAKER: &[u8] = b";RX;UA1;";
 
@@ -117,13 +119,15 @@ impl Codec {
         self.keyed
     }
 
-    /// Bytes for the radio carrying `pcm` (at the modem's rate): nothing while unkeyed, `TX0;US`
-    /// when `keyed` rises, then samples, and `;RX;` when it falls.
+    /// Bytes for the radio carrying `pcm` (at the modem's rate): nothing while unkeyed, `;TX0;`
+    /// when `keyed` rises, then raw samples, and `;RX;` when it falls.
     pub fn send(&mut self, pcm: &[i16], keyed: bool) -> Vec<u8> {
         let mut out = Vec::new();
         if keyed && !self.keyed {
             self.to_radio = resampler(RATE, TX_RATE);
-            out.extend_from_slice(b"TX0;US");
+            // `;` ends an open receive stream. `TX0;` keys. The samples follow with no `US`:
+            // `US` is the radio's own receive stream, and sending it here makes the samples CAT.
+            out.extend_from_slice(b";TX0;");
         }
         if keyed {
             let x: Vec<f64> = pcm.iter().map(|&s| sample(s)).collect();
@@ -177,9 +181,9 @@ mod tests {
         let mut c = Codec::new();
         assert!(c.send(&[0; 480], false).is_empty());
         let on = c.send(&[i16::MAX / 2; 4800], true);
-        assert!(on.starts_with(b"TX0;US"));
-        assert!(!on[6..].contains(&b';'));
-        let n = on.len() - 6;
+        assert!(on.starts_with(b";TX0;"));
+        assert!(!on[5..].contains(&b';'));
+        let n = on.len() - 5;
         assert!((1100..=1152).contains(&n), "{n} bytes for 100 ms");
         assert!(c.send(&[0; 480], true).len() > 100);
         assert_eq!(c.send(&[0; 480], false), b";RX;");

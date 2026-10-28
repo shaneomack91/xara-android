@@ -622,15 +622,21 @@ fn pump(
                 Ok(d) => d,
                 Err(e) => return Pumped { audio: Err(e), ptt: Ok(()) },
             };
+            // A tail holds a (tr)uSDX keyed after the modem has gone idle, and the `;RX;`
+            // then has to punch through a stream that is still running. Unkey with the modem.
+            let timing = match spec {
+                PttSpec::Trusdx => PttTiming { tail: Duration::ZERO, ..a.timing },
+                _ => a.timing,
+            };
             say!(
                 "RADIO MODE: transmitting into {:?}, PTT {}, lead {} ms, tail {:?}, watchdog {:?}",
                 a.playback,
                 dev.describe(),
-                a.timing.lead.as_millis(),
-                a.timing.tail,
-                a.timing.max_on
+                timing.lead.as_millis(),
+                timing.tail,
+                timing.max_on
             );
-            Some(PttCtl::spawn(dev, a.timing, stop.clone()))
+            Some(PttCtl::spawn(dev, timing, stop.clone()))
         }
         None => None,
     };
@@ -652,6 +658,11 @@ fn pump(
             let forced = ptt.as_ref().is_some_and(PttCtl::forced_off);
             tx.process(&mut out, forced);
             sent.iter_mut().zip(&out).for_each(|(s, &v)| *s = audio::quantize(v));
+            // The PTT thread sets this a little later. The (tr)uSDX unkey has to be in this
+            // same block, or a late key-up turns the radio back on after `;RX;` was sent.
+            if matches!(a.ptt, Some(PttSpec::Trusdx)) {
+                audio::trusdx::set_keyed(keyed && !forced);
+            }
             io.write(&sent)?;
             audio::listen::push(&rx, &sent);
             if let Some(r) = rec.as_deref_mut() {

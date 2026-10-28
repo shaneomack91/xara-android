@@ -7,7 +7,9 @@
   the Android app (*Connection: (tr)uSDX*), with no sound card. ported from
   Shane Curless VA3SHC's xara-android (x0rro/xara#12). `--trusdx-speaker`
   turns the radio's speaker on. the Android app can also play the modem's
-  receive and transmit audio on the phone
+  receive and transmit audio on the phone. after PTT drops, only a new PTT
+  can key the radio, and `;RX;` is sent again so a missed unkey does not
+  leave it transmitting
 
 - macOS support: CoreAudio backend, `--list-devices`, CM108 PTT by USB id,
   launchd agent

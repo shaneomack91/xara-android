@@ -16,6 +16,24 @@ use std::time::{Duration, Instant};
 use super::{Audio, DeviceList, RATE};
 use crate::trusdx::{self, BAUD, Codec};
 
+// The app log does not show up in logcat, so key and unkey are written there directly.
+#[cfg(target_os = "android")]
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(prio: libc::c_int, tag: *const libc::c_char, text: *const libc::c_char) -> libc::c_int;
+}
+
+fn note(msg: &str) {
+    say!("truSDX: {msg}");
+    #[cfg(target_os = "android")]
+    {
+        let Ok(text) = std::ffi::CString::new(msg) else { return };
+        unsafe {
+            __android_log_write(4, c"xara".as_ptr(), text.as_ptr());
+        }
+    }
+}
+
 /// The device name for a port the embedding app carries.
 pub const APP: &str = "app";
 /// Received audio older than this is dropped, so a radio clock running fast cannot add delay.
@@ -30,6 +48,8 @@ const RESTART: Duration = Duration::from_secs(2);
 
 /// Set by the `trusdx` PTT, read by the audio: the radio is keyed in its audio stream.
 static KEYED: AtomicBool = AtomicBool::new(false);
+/// `E;` replies from the radio: it parsed transmit audio as CAT, so it was not in the audio stream.
+static CAT_ERRORS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// `UA1;` instead of `UA2;`: the radio's own speaker plays the stream.
 static SPEAKER: AtomicBool = AtomicBool::new(false);
 
@@ -66,7 +86,11 @@ impl Shared {
         let Rx { codec, pcm, heard, .. } = &mut *rx;
         let before = pcm.len();
         for cat in codec.receive(bytes, pcm) {
-            say!("truSDX: {cat}");
+            if cat == "E;" {
+                CAT_ERRORS.fetch_add(1, Ordering::Relaxed);
+            } else if cat.starts_with("RX") || cat.starts_with("TX") || cat.starts_with("UA") {
+                note(&format!("radio {cat}"));
+            }
         }
         if pcm.len() > before {
             *heard = Some(Instant::now());
@@ -89,11 +113,21 @@ impl Shared {
 struct AppPort {
     to_radio: Mutex<VecDeque<u8>>,
     wanted: Condvar,
+    /// Signalled when bytes are taken off `to_radio`, so a full queue can accept more.
+    space: Condvar,
     modem: Mutex<Option<Arc<Shared>>>,
 }
 
-static APP_PORT: AppPort =
-    AppPort { to_radio: Mutex::new(VecDeque::new()), wanted: Condvar::new(), modem: Mutex::new(None) };
+static APP_PORT: AppPort = AppPort {
+    to_radio: Mutex::new(VecDeque::new()),
+    wanted: Condvar::new(),
+    space: Condvar::new(),
+    modem: Mutex::new(None),
+};
+
+/// How much transmit audio may wait in the app queue. More than this and the write waits,
+/// instead of bursting faster than 115200 baud and overflowing the radio (which drops `;RX;`).
+const TX_QUEUE_MAX: usize = 2048;
 
 /// Bytes the app read from the radio's serial port.
 pub fn app_received(bytes: &[u8]) {
@@ -115,7 +149,12 @@ pub fn app_take(max: usize, wait: Duration) -> Vec<u8> {
     let (mut q, _) =
         APP_PORT.wanted.wait_timeout_while(q, wait, |q| q.is_empty()).unwrap_or_else(PoisonError::into_inner);
     let n = q.len().min(max);
-    q.drain(..n).collect()
+    let out: Vec<u8> = q.drain(..n).collect();
+    drop(q);
+    if n > 0 {
+        APP_PORT.space.notify_all();
+    }
+    out
 }
 
 enum Port {
@@ -128,7 +167,23 @@ impl Port {
         match self {
             Self::Tty(f) => f.write_all(bytes),
             Self::App => {
-                APP_PORT.to_radio.lock().unwrap_or_else(PoisonError::into_inner).extend(bytes);
+                if bytes.is_empty() {
+                    return Ok(());
+                }
+                let mut q = APP_PORT.to_radio.lock().unwrap_or_else(PoisonError::into_inner);
+                let started = Instant::now();
+                while q.len().saturating_add(bytes.len()) > TX_QUEUE_MAX {
+                    let left = Duration::from_millis(500).saturating_sub(started.elapsed());
+                    if left.is_zero() {
+                        return Err(io::Error::other("truSDX serial port: transmit queue is not draining"));
+                    }
+                    let (guard, waited) = APP_PORT.space.wait_timeout(q, left).unwrap_or_else(PoisonError::into_inner);
+                    q = guard;
+                    if waited.timed_out() && q.len().saturating_add(bytes.len()) > TX_QUEUE_MAX {
+                        return Err(io::Error::other("truSDX serial port: transmit queue is not draining"));
+                    }
+                }
+                q.extend(bytes);
                 APP_PORT.wanted.notify_all();
                 Ok(())
             }
@@ -202,10 +257,11 @@ pub struct TrusdxIo {
     reader: Option<JoinHandle<()>>,
     due: Option<Instant>,
     asked: Instant,
-    /// PTT has been on during this transmission. Once it drops, leftover samples must not hold
-    /// the radio keyed, or key it again, until a silent block.
-    saw_ptt: bool,
-    hold_off: bool,
+    /// Set when PTT drops. Until PTT rises again, samples must not key the radio: a tail of
+    /// non-zero samples was turning transmit back on, with no later PTT edge to send `;RX;`.
+    latched_off: bool,
+    /// Idle blocks since the unkey. `;RX;` is repeated a few times; one of them is often lost.
+    idle_blocks: u32,
     speaker: bool,
 }
 
@@ -246,8 +302,8 @@ impl TrusdxIo {
             reader,
             due: None,
             asked: Instant::now(),
-            saw_ptt: false,
-            hold_off: false,
+            latched_off: false,
+            idle_blocks: 0,
             speaker: SPEAKER.load(Ordering::SeqCst),
         };
         io.port.write(trusdx::start(io.speaker))?;
@@ -280,6 +336,17 @@ impl Audio for TrusdxIo {
             let Some(left) = until.checked_duration_since(Instant::now()) else { break };
             rx = self.shared.ready.wait_timeout(rx, left).unwrap_or_else(PoisonError::into_inner).0;
         }
+        // Samples often arrive before the block is due. Returning then runs the modem, and its
+        // transmit audio, faster than the 115200 baud stream. The radio's UART overflows and the
+        // `;RX;` that should unkey it is the byte that gets lost.
+        while rx.failed.is_none() {
+            let Some(left) = due.checked_duration_since(Instant::now()) else { break };
+            let (guard, waited) = self.shared.ready.wait_timeout(rx, left).unwrap_or_else(PoisonError::into_inner);
+            rx = guard;
+            if waited.timed_out() {
+                break;
+            }
+        }
         if let Some(why) = &rx.failed {
             return Err(io::Error::other(why.clone()));
         }
@@ -289,19 +356,22 @@ impl Audio for TrusdxIo {
         }
         let quiet = rx.heard.is_none_or(|t| t.elapsed() > RESTART);
         drop(rx);
-        if quiet && !keyed && self.asked.elapsed() > RESTART {
+        // A transmit sends no received audio, so that silence must not immediately look like a
+        // dead stream. Once the radio has been unkeyed, `UA` starts receive audio again.
+        if keyed {
             self.asked = Instant::now();
-            // `UA1;`/`UA2;` do not unkey. A missed `;RX;` would otherwise leave the radio transmitting.
+        } else if quiet && self.asked.elapsed() > RESTART {
+            self.asked = Instant::now();
+            note("resume stream");
             self.port.write(trusdx::resume(self.speaker))?;
         }
         Ok(())
     }
 
-    /// Keys as soon as there is audio, because the PTT thread sets [`KEYED`] a little after the
-    /// modem starts a frame and waiting for it would cut the frame's start. After that PTT has
-    /// been on, only PTT keeps the radio keyed: a non-silent tail must not hold transmit open,
-    /// or the radio never gets `;RX;`. The modem mutes its output when PTT is forced off, so the
-    /// watchdog still unkeys.
+    /// Keys from PTT, or from audio before the first unkey (the PTT flag can lag the first
+    /// samples of a frame). After an unkey, only PTT may key again: leftover samples were
+    /// turning the radio back on, and nothing afterwards sent `;RX;`. `;RX;` is also repeated
+    /// across the next idle blocks. A single one is often lost when it follows a full stream.
     fn write(&mut self, x: &[i16]) -> io::Result<()> {
         if !self.radio {
             return Ok(());
@@ -309,17 +379,34 @@ impl Audio for TrusdxIo {
         let ptt = KEYED.load(Ordering::SeqCst);
         let audio = x.iter().any(|&s| s != 0);
         if ptt {
-            self.saw_ptt = true;
-            self.hold_off = false;
-        } else if self.saw_ptt {
-            self.saw_ptt = false;
-            self.hold_off = true;
+            self.latched_off = false;
+        } else if self.tx.keyed() {
+            // PTT has dropped while samples are still playing. Unkey now; those samples must
+            // not hold the stream open, or key the radio again afterwards.
+            self.latched_off = true;
         }
-        let keyed = ptt || (audio && !self.hold_off);
-        if self.hold_off && !audio {
-            self.hold_off = false;
+        let keyed = ptt || (audio && !self.latched_off);
+        let was = self.tx.keyed();
+        let mut bytes = self.tx.send(x, keyed);
+        if was && !keyed {
+            self.latched_off = true;
+            self.idle_blocks = 0;
+            note(&format!("unkey ptt={ptt} audio={audio} e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
+        } else if keyed && !was {
+            note(&format!("key ptt={ptt} audio={audio} e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
+        } else if !keyed && self.latched_off {
+            self.idle_blocks = self.idle_blocks.saturating_add(1);
+            // A few extra `;RX;` in case the one at the end of the samples was lost, then `UA`
+            // so the radio streams receive audio again. `UA` stays out of the sample burst:
+            // the next transmission starts with `;`, which closes that stream before `TX0;`.
+            if self.idle_blocks == 30 {
+                bytes.extend_from_slice(trusdx::start(self.speaker));
+                note("stream");
+            } else if (1..=2).contains(&(self.idle_blocks / 10)) && self.idle_blocks % 10 == 0 {
+                bytes.extend_from_slice(b";RX;");
+                note(&format!("unkey repeat {}", self.idle_blocks / 10));
+            }
         }
-        let bytes = self.tx.send(x, keyed);
         if bytes.is_empty() { Ok(()) } else { self.port.write(&bytes) }
     }
 }
@@ -385,7 +472,7 @@ mod tests {
         io.write(&quiet).unwrap();
         io.write(&x).unwrap();
         let sent = app_take(4096, Duration::ZERO);
-        assert!(sent.starts_with(b"TX0;US") && sent.len() > 100);
+        assert!(sent.starts_with(b";TX0;") && sent.len() > 100);
         set_keyed(false);
         io.write(&quiet).unwrap();
         assert_eq!(app_take(4096, Duration::ZERO), b";RX;");
@@ -398,11 +485,29 @@ mod tests {
         io.write(&x).unwrap();
         assert!(app_take(4096, Duration::ZERO).is_empty(), "residual audio must not rekey");
         io.write(&quiet).unwrap();
-        // Audio before PTT is on keys the radio at once, so no frame loses its start.
+        // Once PTT has dropped, samples alone must not key the radio again.
         io.write(&x).unwrap();
-        assert!(app_take(4096, Duration::ZERO).starts_with(b"TX0;US"));
+        assert!(app_take(4096, Duration::ZERO).is_empty(), "audio must not key after an unkey");
+        set_keyed(true);
+        io.write(&x).unwrap();
+        assert!(app_take(4096, Duration::ZERO).starts_with(b";TX0;"));
+        set_keyed(false);
         io.write(&quiet).unwrap();
         assert_eq!(app_take(4096, Duration::ZERO), b";RX;");
+        let mut repeated = false;
+        let mut streamed = false;
+        for _ in 0..30 {
+            io.write(&quiet).unwrap();
+            let got = app_take(4096, Duration::ZERO);
+            if got == b";RX;" {
+                repeated = true;
+            }
+            if got == trusdx::START {
+                streamed = true;
+            }
+        }
+        assert!(repeated, "an unkey is repeated, one ;RX; is often lost");
+        assert!(streamed, "receive streaming starts again after the radio is unkeyed");
 
         // A block with no radio audio is silence, on time.
         let t = Instant::now();
