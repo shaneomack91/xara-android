@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::{Audio, DeviceList, RATE};
-use crate::trusdx::{self, BAUD, Codec};
+use crate::trusdx::{self, Codec, BAUD};
 
 // The app log does not show up in logcat, so key and unkey are written there directly.
 #[cfg(target_os = "android")]
@@ -45,6 +45,10 @@ const JITTER: Duration = Duration::from_millis(60);
 const STREAMING: Duration = Duration::from_millis(300);
 /// Without received audio for this long, ask the radio to stream again (it may have been off).
 const RESTART: Duration = Duration::from_secs(2);
+/// The receive stream has stopped once nothing has arrived for this long.
+const STREAM_IDLE: Duration = Duration::from_millis(40);
+/// How long to wait, after asking the radio to stop streaming, before keying anyway.
+const KEY_WAIT: Duration = Duration::from_millis(150);
 
 /// Set by the `trusdx` PTT, read by the audio: the radio is keyed in its audio stream.
 static KEYED: AtomicBool = AtomicBool::new(false);
@@ -263,6 +267,12 @@ pub struct TrusdxIo {
     /// Idle blocks since the unkey. `;RX;` is repeated a few times; one of them is often lost.
     idle_blocks: u32,
     speaker: bool,
+    /// Transmit audio held until the radio has left the receive stream and accepted `;TX0;`.
+    pending: VecDeque<i16>,
+    /// When `;UA0;` was sent. `None` once `;TX0;` has followed it, or while receiving.
+    stopping: Option<Instant>,
+    /// A second `;UA0;` has been sent because the stream was still running.
+    stopped_again: bool,
 }
 
 impl TrusdxIo {
@@ -305,6 +315,9 @@ impl TrusdxIo {
             latched_off: false,
             idle_blocks: 0,
             speaker: SPEAKER.load(Ordering::SeqCst),
+            pending: VecDeque::new(),
+            stopping: None,
+            stopped_again: false,
         };
         io.port.write(trusdx::start(io.speaker))?;
         Ok(io)
@@ -312,6 +325,10 @@ impl TrusdxIo {
 
     pub fn open_capture(capture: &str) -> io::Result<Self> {
         Self::open(capture, capture, false)
+    }
+
+    fn stream_hot(&self) -> bool {
+        self.shared.lock().heard.is_some_and(|t| t.elapsed() < STREAM_IDLE)
     }
 }
 
@@ -370,8 +387,10 @@ impl Audio for TrusdxIo {
 
     /// Keys from PTT, or from audio before the first unkey (the PTT flag can lag the first
     /// samples of a frame). After an unkey, only PTT may key again: leftover samples were
-    /// turning the radio back on, and nothing afterwards sent `;RX;`. `;RX;` is also repeated
-    /// across the next idle blocks. A single one is often lost when it follows a full stream.
+    /// turning the radio back on, and nothing afterwards sent `;RX;`.
+    ///
+    /// The receive stream has to be stopped before `;TX0;`, and `;TX0;` has to be on the wire
+    /// before any sample. Otherwise the radio parses the samples as CAT.
     fn write(&mut self, x: &[i16]) -> io::Result<()> {
         if !self.radio {
             return Ok(());
@@ -380,25 +399,71 @@ impl Audio for TrusdxIo {
         let audio = x.iter().any(|&s| s != 0);
         if ptt {
             self.latched_off = false;
-        } else if self.tx.keyed() {
-            // PTT has dropped while samples are still playing. Unkey now; those samples must
-            // not hold the stream open, or key the radio again afterwards.
+        } else if self.stopping.is_some() || self.tx.keyed() || !self.pending.is_empty() {
             self.latched_off = true;
         }
-        let keyed = ptt || (audio && !self.latched_off);
-        let was = self.tx.keyed();
-        let mut bytes = self.tx.send(x, keyed);
-        if was && !keyed {
-            self.latched_off = true;
-            self.idle_blocks = 0;
-            note(&format!("unkey ptt={ptt} audio={audio} e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
-        } else if keyed && !was {
-            note(&format!("key ptt={ptt} audio={audio} e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
-        } else if !keyed && self.latched_off {
+        // Audio that arrived while PTT was on is still owed to the radio. Audio that arrives
+        // after that is not: it used to key the radio again with no later `;RX;`.
+        if ptt || (audio && !self.latched_off) {
+            self.pending.extend(x);
+        }
+
+        if let Some(since) = self.stopping {
+            if !ptt {
+                self.stopping = None;
+                self.pending.clear();
+                self.latched_off = true;
+                self.idle_blocks = 0;
+                note(&format!("unkey before tx e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
+                return self.port.write(b";RX;");
+            }
+            let hot = self.stream_hot();
+            if hot && since.elapsed() < KEY_WAIT {
+                if !self.stopped_again && since.elapsed() >= KEY_WAIT / 2 {
+                    self.stopped_again = true;
+                    note("key ;UA0; again");
+                    return self.port.write(b";UA0;");
+                }
+                return Ok(());
+            }
+            self.stopping = None;
+            let cmd = self.tx.send(&[], true);
+            note(&format!(
+                "key ;TX0; waited={}ms hot={hot} e={}",
+                since.elapsed().as_millis(),
+                CAT_ERRORS.swap(0, Ordering::Relaxed)
+            ));
+            return self.port.write(&cmd);
+        }
+
+        if self.tx.keyed() {
+            if !self.pending.is_empty() {
+                let n = x.len().min(self.pending.len());
+                let chunk: Vec<i16> = self.pending.drain(..n).collect();
+                return self.port.write(&self.tx.send(&chunk, true));
+            }
+            if !ptt {
+                self.latched_off = true;
+                self.idle_blocks = 0;
+                note(&format!("unkey e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
+                return self.port.write(&self.tx.send(&[], false));
+            }
+            return Ok(());
+        }
+
+        if !self.latched_off && (ptt || !self.pending.is_empty()) {
+            self.stopped_again = false;
+            self.stopping = Some(Instant::now());
+            note(&format!("key ;UA0; e={}", CAT_ERRORS.swap(0, Ordering::Relaxed)));
+            return self.port.write(b";UA0;");
+        }
+
+        if self.latched_off {
             self.idle_blocks = self.idle_blocks.saturating_add(1);
             // A few extra `;RX;` in case the one at the end of the samples was lost, then `UA`
-            // so the radio streams receive audio again. `UA` stays out of the sample burst:
-            // the next transmission starts with `;`, which closes that stream before `TX0;`.
+            // so the radio streams receive audio again. The next transmission sends `;UA0;`
+            // and waits for that stream to stop before `;TX0;`.
+            let mut bytes = Vec::new();
             if self.idle_blocks == 30 {
                 bytes.extend_from_slice(trusdx::start(self.speaker));
                 note("stream");
@@ -406,8 +471,11 @@ impl Audio for TrusdxIo {
                 bytes.extend_from_slice(b";RX;");
                 note(&format!("unkey repeat {}", self.idle_blocks / 10));
             }
+            if !bytes.is_empty() {
+                return self.port.write(&bytes);
+            }
         }
-        if bytes.is_empty() { Ok(()) } else { self.port.write(&bytes) }
+        Ok(())
     }
 }
 
@@ -468,32 +536,65 @@ mod tests {
         let quiet = [0i16; super::super::BLOCK];
         io.write(&quiet).unwrap();
         assert!(app_take(4096, Duration::ZERO).is_empty(), "nothing is sent unkeyed");
+        // The receive stream has to be quiet before `;TX0;`. The samples above were just now.
+        std::thread::sleep(Duration::from_millis(60));
+
         set_keyed(true);
         io.write(&quiet).unwrap();
+        assert_eq!(app_take(4096, Duration::ZERO), b";UA0;", "streaming is stopped before transmit");
         io.write(&x).unwrap();
-        let sent = app_take(4096, Duration::ZERO);
-        assert!(sent.starts_with(b";TX0;") && sent.len() > 100);
+        assert_eq!(app_take(4096, Duration::ZERO), b";TX0;");
+        io.write(&x).unwrap();
+        let samples = app_take(4096, Duration::ZERO);
+        assert!(
+            !samples.is_empty() && !samples.contains(&b';'),
+            "samples follow ;TX0; on their own, got {} bytes",
+            samples.len()
+        );
         set_keyed(false);
-        io.write(&quiet).unwrap();
-        assert_eq!(app_take(4096, Duration::ZERO), b";RX;");
-        // Samples still playing after PTT drops must unkey, and must not key the radio again.
+        let mut unkeyed = false;
+        for _ in 0..8 {
+            io.write(&quiet).unwrap();
+            if app_take(4096, Duration::ZERO) == b";RX;" {
+                unkeyed = true;
+                break;
+            }
+        }
+        assert!(unkeyed, "buffered transmit audio is sent, then ;RX;");
+
+        // PTT dropping before `;TX0;` must not leave the radio keyed, and samples afterwards
+        // must not key it again.
         set_keyed(true);
         io.write(&x).unwrap();
         set_keyed(false);
         io.write(&x).unwrap();
-        assert_eq!(app_take(4096, Duration::ZERO).windows(4).any(|w| w == b";RX;"), true);
+        let cancelled = app_take(4096, Duration::ZERO);
+        assert!(cancelled.windows(4).any(|w| w == b";RX;"), "{cancelled:?}");
+        assert!(!cancelled.windows(5).any(|w| w == b";TX0;"), "a dropped PTT never reaches TX0");
         io.write(&x).unwrap();
         assert!(app_take(4096, Duration::ZERO).is_empty(), "residual audio must not rekey");
         io.write(&quiet).unwrap();
-        // Once PTT has dropped, samples alone must not key the radio again.
         io.write(&x).unwrap();
         assert!(app_take(4096, Duration::ZERO).is_empty(), "audio must not key after an unkey");
+
         set_keyed(true);
         io.write(&x).unwrap();
-        assert!(app_take(4096, Duration::ZERO).starts_with(b";TX0;"));
+        assert_eq!(app_take(4096, Duration::ZERO), b";UA0;");
+        io.write(&x).unwrap();
+        assert_eq!(app_take(4096, Duration::ZERO), b";TX0;");
         set_keyed(false);
         io.write(&quiet).unwrap();
-        assert_eq!(app_take(4096, Duration::ZERO), b";RX;");
+        // The block that sent `;UA0;` is still buffered, so this write plays it rather than unkeying.
+        let _ = app_take(4096, Duration::ZERO);
+        let mut unkeyed = false;
+        for _ in 0..8 {
+            io.write(&quiet).unwrap();
+            if app_take(4096, Duration::ZERO) == b";RX;" {
+                unkeyed = true;
+                break;
+            }
+        }
+        assert!(unkeyed, ";RX; follows the audio that was waiting");
         let mut repeated = false;
         let mut streamed = false;
         for _ in 0..30 {

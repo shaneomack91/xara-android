@@ -6,12 +6,14 @@
 //! follows `US` as unsigned 8-bit samples at 7825 Hz until `;`, with CAT replies between a
 //! `;` and the next `US`. Transmit audio is not a `US` frame: `;TX0;` keys, the following
 //! bytes are raw 8-bit samples at 11520 Hz, and `;RX;` unkeys. A sample is never `;`: the
-//! radio sends 0x3C for it, and hosts send 0x3A. `UA` is what starts the receive stream, so it
-//! is sent again after the radio is back in receive.
+//! radio sends 0x3C for it, and hosts send 0x3A. `UA` starts the receive stream. While that
+//! stream is running the radio treats the bytes that follow a late `;TX0;` as CAT, answers
+//! `E;`, and drops the `;RX;` that should unkey it, so transmit stops the stream first and
+//! sends `;TX0;` before any sample.
 
 use std::collections::VecDeque;
 
-use crate::audio::{RATE, quantize, sample};
+use crate::audio::{quantize, sample, RATE};
 use crate::resample::Resampler;
 
 pub const RX_RATE: u32 = 7825;
@@ -28,11 +30,19 @@ pub const RESUME: &[u8] = b";RX;UA2;";
 pub const RESUME_SPEAKER: &[u8] = b";RX;UA1;";
 
 pub fn start(speaker: bool) -> &'static [u8] {
-    if speaker { START_SPEAKER } else { START }
+    if speaker {
+        START_SPEAKER
+    } else {
+        START
+    }
 }
 
 pub fn resume(speaker: bool) -> &'static [u8] {
-    if speaker { RESUME_SPEAKER } else { RESUME }
+    if speaker {
+        RESUME_SPEAKER
+    } else {
+        RESUME
+    }
 }
 const SILENCE: u8 = 0x80;
 const CAT_MAX: usize = 64;
@@ -142,7 +152,11 @@ impl Codec {
 
 fn byte(v: f64) -> u8 {
     let b = ((v * 128.0).round().clamp(-128.0, 127.0) as i32 + i32::from(SILENCE)) as u8;
-    if b == b';' { b':' } else { b }
+    if b == b';' {
+        b':'
+    } else {
+        b
+    }
 }
 
 #[cfg(test)]

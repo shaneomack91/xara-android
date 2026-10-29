@@ -9,7 +9,9 @@
   turns the radio's speaker on. the Android app can also play the modem's
   receive and transmit audio on the phone. after PTT drops, only a new PTT
   can key the radio, and `;RX;` is sent again so a missed unkey does not
-  leave it transmitting
+  leave it transmitting. transmit stops the receive stream with `;UA0;`
+  and sends `;TX0;` before any sample, then starts the stream again once
+  the radio is back in receive
 
 - macOS support: CoreAudio backend, `--list-devices`, CM108 PTT by USB id,
   launchd agent
